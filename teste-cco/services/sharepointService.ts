@@ -1,5 +1,5 @@
 
-import { SPTask, SPOperation, SPStatus, Task, OperationStatus, HistoryRecord, TLRoute, TLVehicle } from '../types';
+import { SPTask, SPOperation, SPStatus, Task, OperationStatus, HistoryRecord } from '../types';
 
 const SITE_PATH = "vialacteoscombr.sharepoint.com:/sites/CCO";
 let cachedSiteId: string | null = null;
@@ -27,7 +27,7 @@ async function graphFetch(endpoint: string, token: string, options: RequestInit 
       errDetail = await res.text();
     }
     console.error(`Graph API Error [${res.status}]:`, errDetail);
-    if (res.status === 403) throw new Error("Acesso Negado: Verifique as permissões no SharePoint.");
+    if (res.status === 403) throw new Error("Acesso Negado: Verifique as permissões de EDIÇÃO na lista.");
     throw new Error(errDetail);
   }
   return res.status === 204 ? null : res.json();
@@ -47,8 +47,7 @@ async function findListByIdOrName(siteId: string, listName: string, token: strin
     const data = await graphFetch(`/sites/${siteId}/lists`, token);
     const found = data.value.find((l: any) => 
       l.name?.toLowerCase() === listName.toLowerCase() || 
-      l.displayName?.toLowerCase() === listName.toLowerCase() ||
-      l.displayName?.toLowerCase().replace(/\s/g, '_') === listName.toLowerCase()
+      l.displayName?.toLowerCase() === listName.toLowerCase()
     );
     if (found) return found;
   }
@@ -203,7 +202,7 @@ export const SharePointService = {
           body: JSON.stringify({ fields })
         });
     } catch (error: any) {
-        throw new Error(`Erro ao gravar histórico: ${error.message}`);
+        throw new Error(`Erro ao gravar na lista ${listName}: ${error.message}`);
     }
   },
 
@@ -234,46 +233,17 @@ export const SharePointService = {
       const siteId = await getResolvedSiteId(token);
       const list = await findListByIdOrName(siteId, 'Usuarios_cco', token);
       const mapping = await getListColumnMapping(siteId, list.id, token);
+      
       const colEmail = resolveFieldName(mapping, 'Email');
       const colNome = resolveFieldName(mapping, 'Nome');
+      
       const filter = `fields/${colEmail} eq '${email}'`;
       const data = await graphFetch(`/sites/${siteId}/lists/${list.id}/items?expand=fields&$filter=${filter}`, token);
-      return (data.value || []).map((item: any) => item.fields[colNome] || "").filter(Boolean);
-    } catch (e) { return []; }
-  },
-
-  async getTLRoutes(token: string): Promise<TLRoute[]> {
-    try {
-      const siteId = await getResolvedSiteId(token);
-      const list = await findListByIdOrName(siteId, 'Rotas_Montes_Claros_TL', token);
-      const data = await graphFetch(`/sites/${siteId}/lists/${list.id}/items?expand=fields`, token);
-      return (data.value || []).map((item: any) => ({
-        id: item.id,
-        Title: item.fields.Title || ""
-      }));
-    } catch (e) { return []; }
-  },
-
-  async getTLVehicles(token: string, listName: 'Cavalos' | 'Reboques'): Promise<TLVehicle[]> {
-    try {
-      const siteId = await getResolvedSiteId(token);
-      const list = await findListByIdOrName(siteId, listName, token);
-      const mapping = await getListColumnMapping(siteId, list.id, token);
-      const data = await graphFetch(`/sites/${siteId}/lists/${list.id}/items?expand=fields`, token);
       
-      const colEquip = resolveFieldName(mapping, listName === 'Cavalos' ? 'Equi' : 'Reboque');
-      const colB1 = resolveFieldName(mapping, 'Boca_01');
-      const colB2 = resolveFieldName(mapping, 'Boca_02');
-      const colB3 = resolveFieldName(mapping, 'Boca_03');
-
-      return (data.value || []).map((item: any) => ({
-        id: item.id,
-        Placa: item.fields.Title || "",
-        Equipamento: item.fields[colEquip] || "",
-        Boca1: item.fields[colB1] || "0",
-        Boca2: item.fields[colB2] || "0",
-        Boca3: item.fields[colB3] || "0"
-      }));
-    } catch (e) { return []; }
+      return (data.value || []).map((item: any) => item.fields[colNome] || "").filter(Boolean);
+    } catch (e) {
+      console.error("Erro ao buscar usuários cadastrados:", e);
+      return [];
+    }
   }
 };
