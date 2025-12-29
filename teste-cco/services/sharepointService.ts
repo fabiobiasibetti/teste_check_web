@@ -179,8 +179,9 @@ export const SharePointService = {
     const listName = 'Historico_checklist_web';
     const list = await findListByIdOrName(siteId, listName, token);
 
+    // Mapeamento forçado baseado no diagnóstico real da lista
     const fields: any = {
-      Title: record.resetBy, 
+      Title: record.resetBy, // Grava Responsável no campo Título (Title)
       Data: record.timestamp,
       DadosJSON: JSON.stringify(record.tasks),
       Celula: record.email
@@ -206,30 +207,10 @@ export const SharePointService = {
       return (data.value || []).map((item: any) => ({
         id: item.fields.id || item.id,
         timestamp: item.fields.Data,
-        resetBy: item.fields.Title, 
+        resetBy: item.fields.Title, // Responsável está no Title
         email: item.fields.Celula,
         tasks: JSON.parse(item.fields.DadosJSON || '[]')
       })).sort((a: any, b: any) => new Date(b.timestamp || 0).getTime() - new Date(a.timestamp || 0).getTime());
     } catch (e) { return []; }
-  },
-
-  async getRegisteredUsers(token: string, email: string): Promise<string[]> {
-    try {
-      const siteId = await getResolvedSiteId(token);
-      const list = await findListByIdOrName(siteId, 'Usuarios_cco', token);
-      const mapping = await getListColumnMapping(siteId, list.id, token);
-      
-      const colEmail = resolveFieldName(mapping, 'Email');
-      const colNome = resolveFieldName(mapping, 'Nome');
-      
-      // Filtra pelo e-mail do usuário logado
-      const filter = `fields/${colEmail} eq '${email}'`;
-      const data = await graphFetch(`/sites/${siteId}/lists/${list.id}/items?expand=fields&$filter=${filter}`, token);
-      
-      return (data.value || []).map((item: any) => item.fields[colNome] || "").filter(Boolean);
-    } catch (e) {
-      console.error("Erro ao buscar usuários cadastrados:", e);
-      return [];
-    }
   }
 };
