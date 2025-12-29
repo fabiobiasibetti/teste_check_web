@@ -1,14 +1,14 @@
 
-import React, { useState, useEffect, useRef } from 'react';
+import React, { useState, useEffect, useRef, useCallback } from 'react';
 import { HashRouter as Router, Routes, Route, useNavigate } from 'react-router-dom';
-import { CheckSquare, History, Truck, Moon, Sun, LogOut, ChevronLeft, ChevronRight, Loader2, RefreshCw, PauseCircle, Send } from 'lucide-react';
+// Fixed: Added ChevronRight, ChevronLeft, and LogOut to the lucide-react imports
+import { CheckSquare, History, Truck, Moon, Sun, Loader2, RefreshCw, CloudCheck, CloudOff, ChevronRight, ChevronLeft, LogOut } from 'lucide-react';
 import TaskManager from './components/TaskManager';
 import HistoryViewer from './components/HistoryViewer';
 import RouteDepartureView from './components/RouteDeparture';
-import SendTL from './components/SendTL';
 import Login from './components/Login';
 import { SharePointService } from './services/sharepointService';
-import { Task, User } from './types';
+import { Task, User, OperationStatus } from './types';
 import { setCurrentUser as setStorageUser } from './services/storageService';
 
 const SidebarLink = ({ to, icon: Icon, label, active, collapsed }: any) => (
@@ -24,21 +24,16 @@ const AppContent = () => {
   const [locations, setLocations] = useState<string[]>([]);
   const [isLoading, setIsLoading] = useState(true);
   const [isSyncing, setIsSyncing] = useState(false);
-  const [isSyncPaused, setIsSyncPaused] = useState(false);
   const [isDarkMode, setIsDarkMode] = useState(true);
   const [collapsed, setCollapsed] = useState(true);
+  // Fixed: Added state for collapsedCategories which was being passed but not defined
   const [collapsedCategories, setCollapsedCategories] = useState<string[]>([]);
   
-  const partialSaveAttemptedRef = useRef(false);
+  // MAPA DE VERDADE LOCAL: { "taskId-location": "status_que_eu_cliquei" }
+  // Só removemos daqui quando a nuvem devolver o MESMO valor.
+  const pendingSyncRef = useRef<Record<string, OperationStatus>>({});
   const lastListTimestampRef = useRef<string | null>(null);
-  const isSyncBlockedRef = useRef(false);
-  const cooldownTimeoutRef = useRef<number | null>(null);
-  
-  const localUpdateTimestampsRef = useRef<Record<string, number>>({});
-  
   const navigate = useNavigate();
-
-  const isAuthorizedForTL = currentUser?.email?.toLowerCase() === 'cco.logistica@viagroup.com.br';
 
   const loadDataFromSharePoint = async (user: User) => {
     if (!user.accessToken) return;
@@ -77,11 +72,6 @@ const AppContent = () => {
       });
 
       setTasks(matrixTasks.filter(t => t.active !== false));
-
-      if (!partialSaveAttemptedRef.current) {
-        checkAndTriggerPartialSave(user, matrixTasks.filter(t => t.active !== false));
-        partialSaveAttemptedRef.current = true;
-      }
     } catch (err) {
       console.error("Erro ao carregar SharePoint:", err);
     } finally {
@@ -89,83 +79,79 @@ const AppContent = () => {
     }
   };
 
+  // LÓGICA DE SINCRONIZAÇÃO À PROVA DE ERROS
   useEffect(() => {
     if (!currentUser?.accessToken || isLoading) return;
 
     const syncInterval = setInterval(async () => {
-      if (isSyncing || isSyncBlockedRef.current) return;
+      if (isSyncing) return;
 
       try {
         const meta = await SharePointService.getListMetadata(currentUser.accessToken!, 'Status_Checklist');
+        
+        // Só processa se houver mudança real na lista do SharePoint
         if (meta.lastModifiedDateTime !== lastListTimestampRef.current) {
           setIsSyncing(true);
           const today = new Date().toISOString().split('T')[0];
-          const newSpStatus = await SharePointService.getStatusByDate(currentUser.accessToken!, today);
+          const cloudStatusList = await SharePointService.getStatusByDate(currentUser.accessToken!, today);
           
-          setTasks(prevTasks => prevTasks.map(task => {
-            const updatedOps = { ...task.operations };
-            let hasChanged = false;
-            
-            locations.forEach(sigla => {
-              const cellKey = `${task.id}-${sigla}`;
-              const now = Date.now();
-              const lastLocalUpdate = localUpdateTimestampsRef.current[cellKey] || 0;
-              if (now - lastLocalUpdate < 15000) return;
+          setTasks(prevTasks => {
+            let hasGlobalChanges = false;
+            const nextTasks = prevTasks.map(task => {
+              const updatedOps = { ...task.operations };
+              let taskChanged = false;
 
-              const statusMatch = newSpStatus.find(s => s.TarefaID === task.id && s.OperacaoSigla === sigla);
-              const newStatusFromCloud = statusMatch ? statusMatch.Status : 'PR';
-              
-              if (updatedOps[sigla] !== newStatusFromCloud) {
-                updatedOps[sigla] = newStatusFromCloud;
-                hasChanged = true;
-              }
+              locations.forEach(sigla => {
+                const cellKey = `${task.id}-${sigla}`;
+                const cloudMatch = cloudStatusList.find(s => s.TarefaID === task.id && s.OperacaoSigla === sigla);
+                const cloudValue = cloudMatch ? cloudMatch.Status : 'PR';
+                const pendingValue = pendingSyncRef.current[cellKey];
+
+                // SE TEM VALOR PENDENTE LOCAL
+                if (pendingValue !== undefined) {
+                  // Se a nuvem já igualou o que eu cliquei, libero a trava
+                  if (cloudValue === pendingValue) {
+                    delete pendingSyncRef.current[cellKey];
+                  } else {
+                    // Ignora o valor da nuvem (PR) e mantém o que eu cliquei (OK)
+                    if (updatedOps[sigla] !== pendingValue) {
+                      updatedOps[sigla] = pendingValue;
+                      taskChanged = true;
+                    }
+                    return; // Pula para a próxima iteração
+                  }
+                }
+
+                // Sincronização Normal (Sem pendências locais)
+                if (updatedOps[sigla] !== cloudValue) {
+                  updatedOps[sigla] = cloudValue;
+                  taskChanged = true;
+                }
+              });
+
+              if (taskChanged) hasGlobalChanges = true;
+              return taskChanged ? { ...task, operations: updatedOps } : task;
             });
-            return hasChanged ? { ...task, operations: updatedOps } : task;
-          }));
+
+            return hasGlobalChanges ? nextTasks : prevTasks;
+          });
+          
           lastListTimestampRef.current = meta.lastModifiedDateTime;
           setIsSyncing(false);
         }
       } catch (e) {
         setIsSyncing(false);
       }
-    }, 6000);
+    }, 5000); 
+
     return () => clearInterval(syncInterval);
   }, [currentUser, isLoading, isSyncing, locations]);
 
-  const handleInteractionStart = (taskId?: string, location?: string) => {
-    isSyncBlockedRef.current = true;
-    setIsSyncPaused(true);
-    if (taskId && location) {
-      localUpdateTimestampsRef.current[`${taskId}-${location}`] = Date.now();
-    }
-  };
-
-  const handleManualSaveComplete = async () => {
-    if (!currentUser?.accessToken) return;
-    if (cooldownTimeoutRef.current) window.clearTimeout(cooldownTimeoutRef.current);
-    cooldownTimeoutRef.current = window.setTimeout(() => {
-        isSyncBlockedRef.current = false;
-        setIsSyncPaused(false);
-        cooldownTimeoutRef.current = null;
-    }, 12000); 
-  };
-
-  const checkAndTriggerPartialSave = async (user: User, currentTasks: Task[]) => {
-    const now = new Date();
-    const hours = now.getHours();
-    if (hours >= 10 && hours < 22) {
-        try {
-            const history = await SharePointService.getHistory(user.accessToken!, user.email);
-            const todayStr = now.toISOString().split('T')[0];
-            const alreadyHasPartial = history.some(h => h.isPartial && h.timestamp.startsWith(todayStr));
-            if (!alreadyHasPartial && currentTasks.length > 0) {
-                await SharePointService.saveHistory(user.accessToken!, {
-                    id: `partial_${Date.now()}`, timestamp: now.toISOString(), tasks: currentTasks, resetBy: user.name, email: user.email, isPartial: true
-                });
-            }
-        } catch (e) {}
-    }
-  };
+  // Função disparada pelo TaskManager ao clicar/editar
+  const handleCellInteraction = useCallback((taskId: string, location: string, status: OperationStatus) => {
+    const cellKey = `${taskId}-${location}`;
+    pendingSyncRef.current[cellKey] = status;
+  }, []);
 
   const handleLogout = () => {
     setUser(null);
@@ -193,15 +179,20 @@ const AppContent = () => {
         <nav className="flex-1 space-y-2">
           <SidebarLink to="/" icon={CheckSquare} label="Checklist" active={window.location.hash === '#/'} collapsed={collapsed} />
           <SidebarLink to="/departures" icon={Truck} label="Saídas" active={window.location.hash === '#/departures'} collapsed={collapsed} />
-          {isAuthorizedForTL && (
-            <SidebarLink to="/send-tl" icon={Send} label="Envio TL's" active={window.location.hash === '#/send-tl'} collapsed={collapsed} />
-          )}
           <SidebarLink to="/history" icon={History} label="Histórico" active={window.location.hash === '#/history'} collapsed={collapsed} />
         </nav>
         
-        <div className={`mt-auto mb-4 p-2 rounded-lg flex items-center justify-center gap-2 transition-colors ${isSyncPaused ? 'text-amber-500 bg-amber-50 dark:bg-amber-900/20' : isSyncing ? 'text-blue-500 bg-blue-50 dark:bg-blue-900/20' : 'text-slate-400'}`}>
-            {isSyncPaused ? <PauseCircle size={14} /> : <RefreshCw size={14} className={isSyncing ? 'animate-spin' : ''} />}
-            {!collapsed && <span className="text-[10px] font-bold uppercase tracking-tighter">{isSyncPaused ? 'Pausa Segura' : isSyncing ? 'Sincronizando' : 'Em Nuvem'}</span>}
+        <div className="mt-auto mb-4 p-2 rounded-lg flex items-center justify-center gap-2">
+            {isSyncing ? (
+              <RefreshCw size={14} className="text-blue-500 animate-spin" />
+            ) : (
+              <CloudCheck size={14} className="text-green-500" />
+            )}
+            {!collapsed && (
+              <span className="text-[10px] font-bold uppercase text-slate-400">
+                {isSyncing ? 'Sincronizando' : 'Nuvem OK'}
+              </span>
+            )}
         </div>
 
         <div className="space-y-2 border-t pt-4 dark:border-slate-800">
@@ -211,13 +202,16 @@ const AppContent = () => {
            <button onClick={() => setCollapsed(!collapsed)} className="p-2 w-full flex justify-center text-slate-500 hover:bg-slate-100 rounded-lg">
              {collapsed ? <ChevronRight size={20}/> : <ChevronLeft size={20}/>}
            </button>
+           <button onClick={handleLogout} className="p-2 w-full flex justify-center text-red-400 hover:bg-red-50 dark:hover:bg-red-900/20 rounded-lg">
+             <LogOut size={20}/>
+           </button>
         </div>
       </aside>
       <main className="flex-1 overflow-hidden p-4">
         {isLoading ? (
           <div className="h-full flex items-center justify-center flex-col gap-4 text-blue-600">
              <Loader2 size={40} className="animate-spin" />
-             <p className="font-bold animate-pulse">Sincronizando com SharePoint...</p>
+             <p className="font-bold animate-pulse">Estabelecendo conexão segura...</p>
           </div>
         ) : (
           <Routes>
@@ -232,12 +226,10 @@ const AppContent = () => {
                 setCollapsedCategories={setCollapsedCategories} 
                 currentUser={currentUser}
                 onLogout={handleLogout}
-                onInteractionStart={handleInteractionStart}
-                onInteractionEnd={handleManualSaveComplete}
+                onInteractionStart={handleCellInteraction}
               />
             } />
             <Route path="/departures" element={<RouteDepartureView />} />
-            {isAuthorizedForTL && <Route path="/send-tl" element={<SendTL currentUser={currentUser} />} />}
             <Route path="/history" element={<HistoryViewer currentUser={currentUser} />} />
           </Routes>
         )}

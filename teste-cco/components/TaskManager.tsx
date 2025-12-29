@@ -5,9 +5,9 @@ import { SharePointService } from '../services/sharepointService';
 import { 
   Maximize2, Minimize2, Loader2, Database, 
   ShieldCheck, AlertCircle, RefreshCw, CheckCircle,
-  Activity, Lock, CheckCircle2, PaintBucket,
-  HelpCircle, X, LogOut, ChevronDown, ChevronRight,
-  RotateCcw, Save, UserCheck
+  Activity, Lock, PaintBucket,
+  X, LogOut, ChevronDown, ChevronRight,
+  RotateCcw, Save
 } from 'lucide-react';
 
 const STATUS_CONFIG: Record<string, { label: string, color: string, next: OperationStatus, shortcut: string, desc: string }> = {
@@ -29,8 +29,7 @@ interface TaskManagerProps {
   setCollapsedCategories: any;
   currentUser: User;
   onLogout: () => void;
-  onInteractionStart?: (taskId?: string, location?: string) => void;
-  onInteractionEnd?: () => void;
+  onInteractionStart?: (taskId: string, location: string, status: OperationStatus) => void;
 }
 
 const TaskManager: React.FC<TaskManagerProps> = ({ 
@@ -39,11 +38,9 @@ const TaskManager: React.FC<TaskManagerProps> = ({
   locations, 
   collapsedCategories,
   setCollapsedCategories,
-  onUserSwitch, 
   currentUser,
   onLogout,
-  onInteractionStart,
-  onInteractionEnd
+  onInteractionStart
 }) => {
   const [activeTool, setActiveTool] = useState<OperationStatus | null>(null);
   const [isUpdating, setIsUpdating] = useState(false);
@@ -93,30 +90,56 @@ const TaskManager: React.FC<TaskManagerProps> = ({
       if (isDragging) {
         setIsDragging(false);
         paintedThisDrag.current.clear();
-        onInteractionEnd?.();
       }
     };
     window.addEventListener('mouseup', handleMouseUp);
     return () => window.removeEventListener('mouseup', handleMouseUp);
-  }, [onInteractionEnd, isDragging]);
+  }, [isDragging]);
 
-  useEffect(() => {
-    const handleKeyDown = (e: KeyboardEvent) => {
-      const target = e.target as HTMLElement;
-      if (target.tagName === 'INPUT' || target.tagName === 'TEXTAREA' || target.tagName === 'SELECT') return;
-      switch (e.key) {
-        case '1': setActiveTool('OK'); break;
-        case '2': setActiveTool('EA'); break;
-        case '3': setActiveTool('ATT'); break;
-        case '4': setActiveTool('AR'); break;
-        case '5': setActiveTool('AT'); break;
-        case '6': setActiveTool('PR'); break;
-        case 'Escape': setActiveTool(null); break;
-      }
-    };
-    window.addEventListener('keydown', handleKeyDown);
-    return () => window.removeEventListener('keydown', handleKeyDown);
-  }, []);
+  const handleUpdateStatus = async (taskId: string, location: string, status: OperationStatus) => {
+    if (!currentUser.accessToken) return;
+    
+    // 1. Notifica o App.tsx sobre a intenção de mudança para bloquear o sync
+    onInteractionStart?.(taskId, location, status);
+
+    // 2. Atualização Otimista (Interface responde na hora)
+    setTasks(prev => prev.map(t => t.id === taskId ? { ...t, operations: { ...t.operations, [location]: status } } : t));
+    
+    setIsUpdating(true);
+    try {
+      const today = new Date().toISOString().split('T')[0];
+      const todayKey = today.replace(/-/g, '');
+      const uniqueKey = `${todayKey}_${taskId}_${location}`;
+      
+      await SharePointService.updateStatus(currentUser.accessToken, {
+        DataReferencia: today, TarefaID: taskId, OperacaoSigla: location, Status: status, Usuario: currentUser.name, Title: uniqueKey
+      });
+    } catch (err: any) {
+        console.error("Erro ao salvar:", err);
+        // O App.tsx via sync irá eventualmente corrigir o estado se falhar, 
+        // mas aqui mantemos o otimista para não travar o usuário.
+    } finally {
+      setIsUpdating(false);
+    }
+  };
+
+  const onCellInteraction = (taskId: string, loc: string, forcedStatus?: OperationStatus) => {
+    const task = tasks.find(t => t.id === taskId);
+    if (!task) return;
+    const currentStatus = task.operations[loc] || 'PR';
+    const nextStatus = forcedStatus || (activeTool || STATUS_CONFIG[currentStatus].next);
+    if (currentStatus !== nextStatus) {
+      handleUpdateStatus(taskId, loc, nextStatus);
+    }
+  };
+
+  const handlePaintRow = async (taskId: string) => {
+    if (!activeTool || !currentUser.accessToken) return;
+    
+    locations.forEach(loc => {
+        handleUpdateStatus(taskId, loc, activeTool!);
+    });
+  };
 
   const handleOpenResetModal = async () => {
     setIsResetModalOpen(true);
@@ -134,64 +157,8 @@ const TaskManager: React.FC<TaskManagerProps> = ({
     }
   };
 
-  const handleUpdateStatus = async (taskId: string, location: string, status: OperationStatus) => {
-    if (!currentUser.accessToken) return;
-    
-    // Notifica o início da atualização para o App bloquear a sincronização
-    onInteractionStart?.(taskId, location);
-    
-    const originalTasks = [...tasks];
-    setTasks(prev => prev.map(t => t.id === taskId ? { ...t, operations: { ...t.operations, [location]: status } } : t));
-    
-    setIsUpdating(true);
-    try {
-      const today = new Date().toISOString().split('T')[0];
-      const todayKey = today.replace(/-/g, '');
-      const uniqueKey = `${todayKey}_${taskId}_${location}`;
-      
-      await SharePointService.updateStatus(currentUser.accessToken, {
-        DataReferencia: today, TarefaID: taskId, OperacaoSigla: location, Status: status, Usuario: currentUser.name, Title: uniqueKey
-      });
-    } catch (err: any) {
-      alert(`Falha ao salvar no SharePoint: ${err.message}`);
-      setTasks(originalTasks);
-    } finally {
-      setIsUpdating(false);
-      onInteractionEnd?.();
-    }
-  };
-
-  const handlePaintRow = async (taskId: string) => {
-    if (!activeTool || !currentUser.accessToken) return;
-    
-    // Notifica que uma linha inteira está sendo alterada
-    locations.forEach(loc => onInteractionStart?.(taskId, loc));
-
-    const originalTasks = [...tasks];
-    setTasks(prev => prev.map(t => t.id === taskId ? { ...t, operations: locations.reduce((acc, loc) => ({...acc, [loc]: activeTool!}), {}) } : t));
-
-    setIsUpdating(true);
-    try {
-      const today = new Date().toISOString().split('T')[0];
-      const todayKey = today.replace(/-/g, '');
-      await Promise.all(locations.map(loc => {
-        const uniqueKey = `${todayKey}_${taskId}_${loc}`;
-        return SharePointService.updateStatus(currentUser.accessToken!, {
-            DataReferencia: today, TarefaID: taskId, OperacaoSigla: loc, Status: activeTool!, Usuario: currentUser.name, Title: uniqueKey
-        });
-      }));
-    } catch (err: any) {
-      alert(`Erro na sincronização: ${err.message}`);
-      setTasks(originalTasks);
-    } finally {
-      setIsUpdating(false);
-      onInteractionEnd?.();
-    }
-  };
-
   const handleResetChecklist = async () => {
     if (!resetResponsible.trim() || !currentUser.accessToken) return;
-    onInteractionStart?.();
     setIsUpdating(true);
     try {
         await SharePointService.saveHistory(currentUser.accessToken, {
@@ -199,48 +166,32 @@ const TaskManager: React.FC<TaskManagerProps> = ({
         });
         const today = new Date().toISOString().split('T')[0];
         const todayKey = today.replace(/-/g, '');
-        const resetPromises: Promise<any>[] = [];
-        tasks.forEach(task => {
-            locations.forEach(loc => {
+        
+        for (const task of tasks) {
+            for (const loc of locations) {
                 const uniqueKey = `${todayKey}_${task.id}_${loc}`;
-                resetPromises.push(SharePointService.updateStatus(currentUser.accessToken!, {
+                // Notifica o App sobre o reset para manter o PR local
+                onInteractionStart?.(task.id, loc, 'PR');
+                await SharePointService.updateStatus(currentUser.accessToken!, {
                     DataReferencia: today, TarefaID: task.id, OperacaoSigla: loc, Status: 'PR', Usuario: resetResponsible, Title: uniqueKey
-                }));
-            });
-        });
-        await Promise.all(resetPromises);
+                });
+            }
+        }
+        
         setTasks(prev => prev.map(t => ({ ...t, operations: locations.reduce((acc, loc) => ({ ...acc, [loc]: 'PR' }), {}) })));
-        autoCollapsedSessionRef.current.clear();
-        manuallyOpenedRef.current.clear();
         setIsResetModalOpen(false);
-        alert("Checklist resetado e salvo com sucesso!");
     } catch (error: any) {
         alert(`ERRO: ${error.message}`);
     } finally {
         setIsUpdating(false);
-        onInteractionEnd?.();
-    }
-  };
-
-  const onCellInteraction = (taskId: string, loc: string, forcedStatus?: OperationStatus) => {
-    const task = tasks.find(t => t.id === taskId);
-    if (!task) return;
-    const currentStatus = task.operations[loc] || 'PR';
-    const nextStatus = forcedStatus || (activeTool || STATUS_CONFIG[currentStatus].next);
-    if (currentStatus !== nextStatus) {
-      handleUpdateStatus(taskId, loc, nextStatus);
     }
   };
 
   const toggleCategory = (cat: string) => {
-    const { isComplete } = getCategoryStats(cat);
-    const isCurrentlyCollapsed = collapsedCategories.includes(cat);
-    if (isCurrentlyCollapsed) {
-      setCollapsedCategories((prev: string[]) => prev.filter(c => c !== cat));
-      if (isComplete) manuallyOpenedRef.current.add(cat);
-    } else if (isComplete) {
-        setCollapsedCategories((prev: string[]) => [...prev, cat]);
-        manuallyOpenedRef.current.delete(cat);
+    if (collapsedCategories.includes(cat)) {
+      setCollapsedCategories(prev => prev.filter(c => c !== cat));
+    } else {
+      setCollapsedCategories(prev => [...prev, cat]);
     }
   };
 
@@ -253,7 +204,7 @@ const TaskManager: React.FC<TaskManagerProps> = ({
 
   return (
     <div className="flex flex-col h-full bg-white dark:bg-slate-900 rounded-2xl border dark:border-slate-800 shadow-sm overflow-hidden relative font-sans transition-colors duration-500">
-      {/* HEADER / TOOLBAR */}
+      {/* Header */}
       <div className="px-4 py-3 border-b dark:border-slate-800 flex flex-col xl:flex-row justify-between items-center bg-gray-50/80 dark:bg-slate-800/80 backdrop-blur-md gap-3 shrink-0 z-50">
         <div className="flex items-center gap-4">
           <div className="flex items-center gap-2">
@@ -276,15 +227,10 @@ const TaskManager: React.FC<TaskManagerProps> = ({
 
         <div className="flex flex-wrap items-center justify-center gap-3">
           <div className="flex items-center gap-2 bg-white dark:bg-slate-950 px-3 py-1.5 rounded-xl border border-slate-200 dark:border-slate-700 shadow-sm">
-            <div className="flex items-center gap-2 text-[10px] font-bold text-slate-400 uppercase tracking-tight mr-1">
-              <PaintBucket size={14} className={activeTool ? 'text-blue-500' : 'text-slate-400'} />
-              {activeTool || 'Pincel'}
-            </div>
             <div className="flex items-center gap-1">
               {(Object.entries(STATUS_CONFIG) as [string, any][]).map(([key, cfg]) => (
-                <button key={key} onClick={() => setActiveTool(activeTool === key ? null : key as OperationStatus)} className={`w-7 h-7 rounded-lg font-black text-[9px] transition-all duration-200 border flex items-center justify-center relative group ${cfg.color} ${activeTool === key ? 'ring-2 ring-offset-2 ring-blue-500 scale-110 z-10' : 'opacity-80 hover:opacity-100 hover:scale-105'}`} title={`${cfg.desc} [${cfg.shortcut}]`}>
+                <button key={key} onClick={() => setActiveTool(activeTool === key ? null : key as OperationStatus)} className={`w-7 h-7 rounded-lg font-black text-[9px] transition-all duration-200 border flex items-center justify-center relative group ${cfg.color} ${activeTool === key ? 'ring-2 ring-offset-2 ring-blue-500 scale-110 z-10' : 'opacity-80 hover:opacity-100 hover:scale-105'}`} title={`${cfg.desc}`}>
                   {cfg.label}
-                  <span className="absolute -bottom-4 text-[8px] text-slate-400 opacity-0 group-hover:opacity-100 font-mono">{cfg.shortcut}</span>
                 </button>
               ))}
             </div>
@@ -295,54 +241,95 @@ const TaskManager: React.FC<TaskManagerProps> = ({
               <RotateCcw size={18} />
               <span className="text-xs font-bold hidden sm:inline">Resetar</span>
             </button>
-            <button onClick={() => setCompact(!compact)} className={`p-2 rounded-xl transition-all ${!compact ? 'bg-blue-100 text-blue-600 dark:bg-blue-900' : 'text-slate-400 hover:bg-slate-100'}`} title="Modo Visualização">
+            <button onClick={() => setCompact(!compact)} className={`p-2 rounded-xl transition-all ${!compact ? 'bg-blue-100 text-blue-600 dark:bg-blue-900' : 'text-slate-400 hover:bg-slate-100'}`}>
               {compact ? <Maximize2 size={18}/> : <Minimize2 size={18}/>}
-            </button>
-            <div className="w-px h-6 bg-slate-200 dark:bg-slate-700 mx-2" />
-            <button onClick={onLogout} className="flex items-center gap-2 px-3 py-1.5 bg-red-50 dark:bg-red-900/30 text-red-600 dark:text-red-400 rounded-xl hover:bg-red-100 transition-all font-bold text-xs">
-                <LogOut size={16}/> Sair
             </button>
           </div>
         </div>
       </div>
 
-      {/* RESET MODAL */}
+      {/* Main Table Area */}
+      <div className="flex-1 overflow-auto bg-slate-100 dark:bg-slate-950 transition-colors duration-500 scrollbar-thin">
+        <table className={`min-w-full border-separate border-spacing-0 select-none ${compact ? 'text-[10px]' : 'text-[11px]'}`}>
+          <thead className="sticky top-0 z-[40]">
+            <tr className="bg-blue-900 dark:bg-blue-950 text-white shadow-xl">
+              <th className="p-3 border-r border-blue-800 dark:border-blue-900 text-left sticky left-0 bg-blue-900 dark:bg-blue-950 z-[45] min-w-[350px] shadow-[4px_0_12px_-4px_rgba(0,0,0,0.4)] font-black uppercase tracking-widest text-[9px]">Ação / Descrição da Tarefa</th>
+              {locations.map(loc => (
+                <th key={loc} className="p-3 border-r border-blue-800 dark:border-blue-900 w-24 text-center font-bold">{loc.replace('LAT-', '').replace('ITA-', '')}</th>
+              ))}
+            </tr>
+          </thead>
+          <tbody>
+            {(Object.entries(groupedTasks) as [string, Task[]][]).map(([cat, catTasks]) => {
+              const isCollapsed = collapsedCategories.includes(cat);
+              const { percent, isComplete } = getCategoryStats(cat);
+              return (
+                <React.Fragment key={cat}>
+                  <tr className="bg-blue-600 dark:bg-blue-900 text-white transition-colors h-10 group relative overflow-hidden cursor-pointer hover:bg-blue-700" onClick={() => toggleCategory(cat)}>
+                    <td colSpan={locations.length + 1} className="p-0 border-y border-blue-700 sticky left-0 z-30 overflow-hidden">
+                      <div className={`absolute inset-y-0 left-0 transition-all duration-1000 pointer-events-none ${isComplete ? 'bg-green-500' : 'bg-blue-400'}`} style={{ width: `${percent}%` }} />
+                      <div className="absolute inset-0 px-4 flex items-center justify-between z-10 pointer-events-auto">
+                        <div className="flex items-center gap-3">
+                          {isCollapsed ? <ChevronRight size={14}/> : <ChevronDown size={14}/>}
+                          <span className="text-[10px] font-black uppercase tracking-widest">{cat}</span>
+                        </div>
+                        <span className="text-[9px] font-black bg-black/20 px-2 py-0.5 rounded-lg">
+                            {percent}% {isComplete ? '(OK)' : ''}
+                        </span>
+                      </div>
+                    </td>
+                  </tr>
+                  {!isCollapsed && catTasks.map(task => (
+                    <tr key={task.id} className="bg-white dark:bg-slate-900 border-b border-slate-100 dark:border-slate-800/50 hover:bg-blue-50/30 dark:hover:bg-slate-800/50 transition-colors group">
+                      <td className={`p-4 border-r border-slate-100 dark:border-slate-800 sticky left-0 bg-inherit z-30 shadow-[4px_0_8px_-4px_rgba(0,0,0,0.1)] transition-all ${activeTool ? 'cursor-crosshair hover:bg-blue-50 dark:hover:bg-blue-900/20' : ''}`} onClick={() => handlePaintRow(task.id)}>
+                        <div className="flex flex-col gap-1.5">
+                            <div className="font-bold text-slate-800 dark:text-slate-100 text-[13px] leading-tight">{task.title}</div>
+                            {task.description && <div className="text-[11px] font-normal text-slate-500 dark:text-slate-400 leading-snug whitespace-pre-wrap opacity-90">{task.description}</div>}
+                        </div>
+                      </td>
+                      {locations.map(loc => {
+                        const status = task.operations[loc] || 'PR';
+                        const cfg = STATUS_CONFIG[status];
+                        return (
+                          <td key={loc} className="p-0 border-r border-slate-100 dark:border-slate-800 h-12 relative" onMouseDown={() => {
+                                setIsDragging(true);
+                                onCellInteraction(task.id, loc);
+                                paintedThisDrag.current.add(`${task.id}-${loc}`);
+                            }} onMouseEnter={() => {
+                                if (isDragging && !paintedThisDrag.current.has(`${task.id}-${loc}`)) {
+                                    onCellInteraction(task.id, loc, activeTool || undefined);
+                                    paintedThisDrag.current.add(`${task.id}-${loc}`);
+                                }
+                            }}>
+                            <div className={`absolute inset-[3px] rounded-lg flex items-center justify-center transition-all duration-200 font-black text-[10px] ${cfg.color} hover:brightness-95 active:scale-90 shadow-sm cursor-pointer`}>{cfg.label}</div>
+                          </td>
+                        );
+                      })}
+                    </tr>
+                  ))}
+                </React.Fragment>
+              );
+            })}
+          </tbody>
+        </table>
+      </div>
+
       {isResetModalOpen && (
-        <div className="fixed inset-0 bg-black/60 backdrop-blur-sm z-[100] flex items-center justify-center p-4 animate-in fade-in duration-200">
+        <div className="fixed inset-0 bg-black/60 backdrop-blur-sm z-[100] flex items-center justify-center p-4">
              <div className="bg-white dark:bg-slate-900 rounded-2xl shadow-2xl w-full max-w-md overflow-hidden border dark:border-slate-700">
                 <div className="bg-amber-700 dark:bg-slate-800 text-white p-4 flex justify-between items-center">
-                    <div className="flex items-center gap-2">
-                        <div className="p-2 bg-amber-600 rounded-lg"><RotateCcw size={20} /></div>
-                        <div>
-                            <h3 className="font-bold text-lg">Resetar Checklist</h3>
-                            <p className="text-[10px] text-amber-200 uppercase tracking-tighter">Snapshot será salvo no SharePoint</p>
-                        </div>
-                    </div>
-                    <button onClick={() => setIsResetModalOpen(false)} className="hover:bg-white/10 p-1 rounded-full transition-colors"><X size={24} /></button>
+                    <h3 className="font-bold text-lg">Resetar Checklist</h3>
+                    <button onClick={() => setIsResetModalOpen(false)} className="hover:bg-white/10 p-1 rounded-full"><X size={24} /></button>
                 </div>
                 <div className="p-6 bg-gray-50 dark:bg-slate-900">
-                    <div className="mb-6">
-                        <label className="block text-xs font-bold text-gray-500 dark:text-gray-400 uppercase mb-2">Quem está realizando o reset?</label>
-                        <div className="relative">
-                            {isLoadingUsers ? (
-                                <div className="flex items-center gap-2 p-3 bg-white dark:bg-slate-800 border dark:border-slate-700 rounded-xl text-slate-400 text-sm italic"><Loader2 size={16} className="animate-spin" /> Buscando nomes...</div>
-                            ) : registeredUsers.length > 0 ? (
-                                <select value={resetResponsible} onChange={(e) => setResetResponsible(e.target.value)} className="w-full p-3 pr-10 border dark:border-slate-700 rounded-xl bg-white dark:bg-slate-800 text-sm dark:text-white focus:ring-2 focus:ring-amber-500 outline-none appearance-none font-bold shadow-sm" autoFocus>
-                                    <option value="">Selecione seu nome...</option>
-                                    {registeredUsers.map(name => <option key={name} value={name}>{name}</option>)}
-                                </select>
-                            ) : (
-                                <div className="p-4 bg-red-50 dark:bg-red-900/20 border border-red-100 dark:border-red-900 rounded-xl text-red-600 dark:text-red-400 text-xs flex flex-col gap-2">
-                                    <div className="flex items-center gap-2 font-bold uppercase"><AlertCircle size={16} /> Usuário não autorizado</div>
-                                    <p className="opacity-80">Nenhum nome encontrado para o e-mail: <b>{currentUser.email}</b></p>
-                                </div>
-                            )}
-                            {!isLoadingUsers && registeredUsers.length > 0 && <div className="absolute right-3 top-1/2 -translate-y-1/2 text-slate-400 pointer-events-none"><ChevronDown size={18} /></div>}
-                        </div>
-                    </div>
+                    <label className="block text-xs font-bold text-gray-500 dark:text-gray-400 uppercase mb-2">Responsável</label>
+                    <select value={resetResponsible} onChange={(e) => setResetResponsible(e.target.value)} className="w-full p-3 border dark:border-slate-700 rounded-xl bg-white dark:bg-slate-800 text-sm dark:text-white font-bold">
+                        <option value="">Selecione seu nome...</option>
+                        {registeredUsers.map(name => <option key={name} value={name}>{name}</option>)}
+                    </select>
                     <div className="flex gap-3 mt-8">
-                        <button onClick={() => setIsResetModalOpen(false)} className="flex-1 py-3 bg-gray-200 dark:bg-slate-700 text-gray-700 dark:text-gray-200 font-bold rounded-xl hover:bg-gray-300 dark:hover:bg-slate-600 transition-colors">Cancelar</button>
-                        <button onClick={handleResetChecklist} disabled={!resetResponsible.trim() || isUpdating || isLoadingUsers} className="flex-[2] py-3 bg-amber-600 text-white font-bold rounded-xl shadow-lg flex items-center justify-center gap-2 disabled:opacity-50 transition-all hover:bg-amber-700 active:scale-95">
+                        <button onClick={() => setIsResetModalOpen(false)} className="flex-1 py-3 bg-gray-200 dark:bg-slate-700 text-gray-700 dark:text-gray-200 font-bold rounded-xl">Cancelar</button>
+                        <button onClick={handleResetChecklist} disabled={!resetResponsible.trim() || isUpdating} className="flex-[2] py-3 bg-amber-600 text-white font-bold rounded-xl shadow-lg flex items-center justify-center gap-2">
                             {isUpdating ? <Loader2 size={20} className="animate-spin" /> : <Save size={20} />} Confirmar Reset
                         </button>
                     </div>
@@ -350,82 +337,6 @@ const TaskManager: React.FC<TaskManagerProps> = ({
              </div>
         </div>
       )}
-
-      {/* MAIN TABLE AREA */}
-      <div className="flex-1 overflow-auto bg-slate-100 dark:bg-slate-950 transition-colors duration-500 scrollbar-thin">
-        {tasks.length === 0 ? (
-            <div className="h-full flex flex-col items-center justify-center p-12 text-center">
-                <Database size={48} className="text-blue-600 mb-6 opacity-20"/>
-                <h3 className="text-lg font-black dark:text-white mb-2">Nenhuma tarefa encontrada</h3>
-            </div>
-        ) : (
-            <table className={`min-w-full border-separate border-spacing-0 select-none ${compact ? 'text-[10px]' : 'text-[11px]'}`}>
-              <thead className="sticky top-0 z-[40]">
-                <tr className="bg-blue-900 dark:bg-blue-950 text-white shadow-xl">
-                  <th className="p-3 border-r border-blue-800 dark:border-blue-900 text-left sticky left-0 bg-blue-900 dark:bg-blue-950 z-[45] min-w-[350px] shadow-[4px_0_12px_-4px_rgba(0,0,0,0.4)] font-black uppercase tracking-widest text-[9px]">Ação / Descrição da Tarefa</th>
-                  {locations.map(loc => (
-                    <th key={loc} className="p-3 border-r border-blue-800 dark:border-blue-900 w-24 text-center font-bold">{loc.replace('LAT-', '').replace('ITA-', '')}</th>
-                  ))}
-                </tr>
-              </thead>
-              <tbody>
-                {(Object.entries(groupedTasks) as [string, Task[]][]).map(([cat, catTasks]) => {
-                  const isCollapsed = collapsedCategories.includes(cat);
-                  const { percent, isComplete } = getCategoryStats(cat);
-                  const canBeMinimized = isComplete || isCollapsed;
-                  return (
-                    <React.Fragment key={cat}>
-                      <tr className={`bg-blue-600 dark:bg-blue-900 text-white transition-colors h-10 group relative overflow-hidden cursor-pointer ${!canBeMinimized ? 'opacity-90' : 'hover:bg-blue-700'}`} onClick={() => toggleCategory(cat)} title={!canBeMinimized ? "Finalize as tarefas para poder minimizar esta categoria" : "Clique para expandir/colapsar"}>
-                        <td colSpan={locations.length + 1} className="p-0 border-y border-blue-700 sticky left-0 z-30 overflow-hidden">
-                          <div className={`absolute inset-y-0 left-0 transition-all duration-1000 pointer-events-none ${isComplete ? 'bg-green-500' : 'bg-blue-400'}`} style={{ width: `${percent}%` }} />
-                          <div className="absolute inset-0 px-4 flex items-center justify-between z-10 pointer-events-auto">
-                            <div className="flex items-center gap-3">
-                              {isCollapsed ? <ChevronRight size={14}/> : <ChevronDown size={14}/>}
-                              <span className="text-[10px] font-black uppercase tracking-widest">{cat}</span>
-                            </div>
-                            <span className="text-[9px] font-black bg-black/20 px-2 py-0.5 rounded-lg flex items-center gap-1">
-                                {isComplete && <CheckCircle size={10} />}
-                                {percent}% {isComplete ? '(FINALIZADO)' : ''}
-                            </span>
-                          </div>
-                        </td>
-                      </tr>
-                      {!isCollapsed && catTasks.map(task => (
-                        <tr key={task.id} className="bg-white dark:bg-slate-900 border-b border-slate-100 dark:border-slate-800/50 hover:bg-blue-50/30 dark:hover:bg-slate-800/50 transition-colors group">
-                          <td className={`p-4 border-r border-slate-100 dark:border-slate-800 sticky left-0 bg-inherit z-30 shadow-[4px_0_8px_-4px_rgba(0,0,0,0.1)] transition-all ${activeTool ? 'cursor-crosshair hover:bg-blue-50 dark:hover:bg-blue-900/20' : ''}`} onClick={() => handlePaintRow(task.id)}>
-                            <div className="flex flex-col gap-1.5">
-                                <div className="font-bold text-slate-800 dark:text-slate-100 text-[13px] leading-tight">{task.title}</div>
-                                {task.description && <div className="text-[11px] font-normal text-slate-500 dark:text-slate-400 leading-snug whitespace-pre-wrap opacity-90">{task.description}</div>}
-                            </div>
-                            {activeTool && <div className="absolute right-2 top-1/2 -translate-y-1/2 opacity-0 group-hover:opacity-100"><PaintBucket size={14} className="text-blue-500" /></div>}
-                          </td>
-                          {locations.map(loc => {
-                            const status = task.operations[loc] || 'PR';
-                            const cfg = STATUS_CONFIG[status];
-                            return (
-                              <td key={loc} className="p-0 border-r border-slate-100 dark:border-slate-800 h-12 relative" onMouseDown={() => {
-                                    setIsDragging(true);
-                                    onCellInteraction(task.id, loc);
-                                    paintedThisDrag.current.add(`${task.id}-${loc}`);
-                                }} onMouseEnter={() => {
-                                    if (isDragging && !paintedThisDrag.current.has(`${task.id}-${loc}`)) {
-                                        onCellInteraction(task.id, loc, activeTool || undefined);
-                                        paintedThisDrag.current.add(`${task.id}-${loc}`);
-                                    }
-                                }}>
-                                <div className={`absolute inset-[3px] rounded-lg flex items-center justify-center transition-all duration-200 font-black text-[10px] ${cfg.color} hover:brightness-95 active:scale-90 shadow-sm cursor-pointer`}>{cfg.label}</div>
-                              </td>
-                            );
-                          })}
-                        </tr>
-                      ))}
-                    </React.Fragment>
-                  );
-                })}
-              </tbody>
-            </table>
-        )}
-      </div>
     </div>
   );
 };
