@@ -95,7 +95,22 @@ export interface HistoryRecord {
   tasks: Task[];
   resetBy?: string;
   email?: string;
-  isPartial?: boolean; // Define se é um salvamento de troca de turno (10h) ou reset
+  isPartial?: boolean;
+}
+
+// Novos tipos para Envio de TL
+export interface TLRoute {
+  id: string;
+  Title: string;
+}
+
+export interface TLVehicle {
+  id: string;
+  Placa: string;
+  Equipamento: string;
+  Boca1: string;
+  Boca2: string;
+  Boca3: string;
 }
 
 export const VALID_USERS = [

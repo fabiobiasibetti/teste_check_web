@@ -1,10 +1,11 @@
 
 import React, { useState, useEffect, useRef } from 'react';
 import { HashRouter as Router, Routes, Route, useNavigate } from 'react-router-dom';
-import { CheckSquare, History, Truck, Moon, Sun, LogOut, ChevronLeft, ChevronRight, Loader2, RefreshCw, PauseCircle } from 'lucide-react';
+import { CheckSquare, History, Truck, Moon, Sun, LogOut, ChevronLeft, ChevronRight, Loader2, RefreshCw, PauseCircle, Send } from 'lucide-react';
 import TaskManager from './components/TaskManager';
 import HistoryViewer from './components/HistoryViewer';
 import RouteDepartureView from './components/RouteDeparture';
+import SendTL from './components/SendTL';
 import Login from './components/Login';
 import { SharePointService } from './services/sharepointService';
 import { Task, User } from './types';
@@ -33,7 +34,11 @@ const AppContent = () => {
   const isSyncBlockedRef = useRef(false);
   const cooldownTimeoutRef = useRef<number | null>(null);
   
+  const localUpdateTimestampsRef = useRef<Record<string, number>>({});
+  
   const navigate = useNavigate();
+
+  const isAuthorizedForTL = currentUser?.email?.toLowerCase() === 'cco.logistica@viagroup.com.br';
 
   const loadDataFromSharePoint = async (user: User) => {
     if (!user.accessToken) return;
@@ -89,20 +94,29 @@ const AppContent = () => {
 
     const syncInterval = setInterval(async () => {
       if (isSyncing || isSyncBlockedRef.current) return;
+
       try {
         const meta = await SharePointService.getListMetadata(currentUser.accessToken!, 'Status_Checklist');
         if (meta.lastModifiedDateTime !== lastListTimestampRef.current) {
           setIsSyncing(true);
           const today = new Date().toISOString().split('T')[0];
           const newSpStatus = await SharePointService.getStatusByDate(currentUser.accessToken!, today);
+          
           setTasks(prevTasks => prevTasks.map(task => {
             const updatedOps = { ...task.operations };
             let hasChanged = false;
+            
             locations.forEach(sigla => {
+              const cellKey = `${task.id}-${sigla}`;
+              const now = Date.now();
+              const lastLocalUpdate = localUpdateTimestampsRef.current[cellKey] || 0;
+              if (now - lastLocalUpdate < 15000) return;
+
               const statusMatch = newSpStatus.find(s => s.TarefaID === task.id && s.OperacaoSigla === sigla);
-              const newStatus = statusMatch ? statusMatch.Status : 'PR';
-              if (updatedOps[sigla] !== newStatus) {
-                updatedOps[sigla] = newStatus;
+              const newStatusFromCloud = statusMatch ? statusMatch.Status : 'PR';
+              
+              if (updatedOps[sigla] !== newStatusFromCloud) {
+                updatedOps[sigla] = newStatusFromCloud;
                 hasChanged = true;
               }
             });
@@ -118,16 +132,22 @@ const AppContent = () => {
     return () => clearInterval(syncInterval);
   }, [currentUser, isLoading, isSyncing, locations]);
 
-  const handleManualSaveComplete = async () => {
-    if (!currentUser?.accessToken) return;
+  const handleInteractionStart = (taskId?: string, location?: string) => {
     isSyncBlockedRef.current = true;
     setIsSyncPaused(true);
+    if (taskId && location) {
+      localUpdateTimestampsRef.current[`${taskId}-${location}`] = Date.now();
+    }
+  };
+
+  const handleManualSaveComplete = async () => {
+    if (!currentUser?.accessToken) return;
     if (cooldownTimeoutRef.current) window.clearTimeout(cooldownTimeoutRef.current);
     cooldownTimeoutRef.current = window.setTimeout(() => {
         isSyncBlockedRef.current = false;
         setIsSyncPaused(false);
         cooldownTimeoutRef.current = null;
-    }, 8000); 
+    }, 12000); 
   };
 
   const checkAndTriggerPartialSave = async (user: User, currentTasks: Task[]) => {
@@ -148,15 +168,11 @@ const AppContent = () => {
   };
 
   const handleLogout = () => {
-    // Limpa o cache local
     setUser(null);
     setStorageUser(null);
     delete (window as any).__access_token;
-    
-    // Limpa o cache do MSAL no navegador
     localStorage.clear(); 
     sessionStorage.clear();
-    
     navigate('/');
   };
 
@@ -177,6 +193,9 @@ const AppContent = () => {
         <nav className="flex-1 space-y-2">
           <SidebarLink to="/" icon={CheckSquare} label="Checklist" active={window.location.hash === '#/'} collapsed={collapsed} />
           <SidebarLink to="/departures" icon={Truck} label="Saídas" active={window.location.hash === '#/departures'} collapsed={collapsed} />
+          {isAuthorizedForTL && (
+            <SidebarLink to="/send-tl" icon={Send} label="Envio TL's" active={window.location.hash === '#/send-tl'} collapsed={collapsed} />
+          )}
           <SidebarLink to="/history" icon={History} label="Histórico" active={window.location.hash === '#/history'} collapsed={collapsed} />
         </nav>
         
@@ -213,11 +232,12 @@ const AppContent = () => {
                 setCollapsedCategories={setCollapsedCategories} 
                 currentUser={currentUser}
                 onLogout={handleLogout}
-                onInteractionStart={() => { isSyncBlockedRef.current = true; setIsSyncPaused(true); }}
+                onInteractionStart={handleInteractionStart}
                 onInteractionEnd={handleManualSaveComplete}
               />
             } />
             <Route path="/departures" element={<RouteDepartureView />} />
+            {isAuthorizedForTL && <Route path="/send-tl" element={<SendTL currentUser={currentUser} />} />}
             <Route path="/history" element={<HistoryViewer currentUser={currentUser} />} />
           </Routes>
         )}

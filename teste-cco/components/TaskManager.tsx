@@ -29,7 +29,7 @@ interface TaskManagerProps {
   setCollapsedCategories: any;
   currentUser: User;
   onLogout: () => void;
-  onInteractionStart?: () => void;
+  onInteractionStart?: (taskId?: string, location?: string) => void;
   onInteractionEnd?: () => void;
 }
 
@@ -137,8 +137,9 @@ const TaskManager: React.FC<TaskManagerProps> = ({
   const handleUpdateStatus = async (taskId: string, location: string, status: OperationStatus) => {
     if (!currentUser.accessToken) return;
     
-    // Bloqueia sincronização de fundo durante a gravação manual
-    onInteractionStart?.();
+    // Notifica o início da atualização para o App bloquear a sincronização
+    onInteractionStart?.(taskId, location);
+    
     const originalTasks = [...tasks];
     setTasks(prev => prev.map(t => t.id === taskId ? { ...t, operations: { ...t.operations, [location]: status } } : t));
     
@@ -156,14 +157,16 @@ const TaskManager: React.FC<TaskManagerProps> = ({
       setTasks(originalTasks);
     } finally {
       setIsUpdating(false);
-      onInteractionEnd?.(); // Notifica o App para iniciar o cooldown e atualizar o timestamp
+      onInteractionEnd?.();
     }
   };
 
   const handlePaintRow = async (taskId: string) => {
     if (!activeTool || !currentUser.accessToken) return;
     
-    onInteractionStart?.();
+    // Notifica que uma linha inteira está sendo alterada
+    locations.forEach(loc => onInteractionStart?.(taskId, loc));
+
     const originalTasks = [...tasks];
     setTasks(prev => prev.map(t => t.id === taskId ? { ...t, operations: locations.reduce((acc, loc) => ({...acc, [loc]: activeTool!}), {}) } : t));
 
@@ -401,7 +404,6 @@ const TaskManager: React.FC<TaskManagerProps> = ({
                             const cfg = STATUS_CONFIG[status];
                             return (
                               <td key={loc} className="p-0 border-r border-slate-100 dark:border-slate-800 h-12 relative" onMouseDown={() => {
-                                    onInteractionStart?.();
                                     setIsDragging(true);
                                     onCellInteraction(task.id, loc);
                                     paintedThisDrag.current.add(`${task.id}-${loc}`);
