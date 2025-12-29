@@ -7,7 +7,7 @@ import HistoryViewer from './components/HistoryViewer';
 import RouteDepartureView from './components/RouteDeparture';
 import Login from './components/Login';
 import { SharePointService } from './services/sharepointService';
-import { Task, User } from './types';
+import { Task, User, SPTask, SPOperation, SPStatus } from './types';
 import { setCurrentUser as setStorageUser } from './services/storageService';
 
 const SidebarLink = ({ to, icon: Icon, label, active, collapsed }: any) => (
@@ -84,20 +84,25 @@ const AppContent = () => {
     }
   };
 
+  // Sincronização de fundo com proteção contra reversão
   useEffect(() => {
     if (!currentUser?.accessToken || isLoading) return;
 
     const syncInterval = setInterval(async () => {
       if (isSyncing || isSyncBlockedRef.current) return;
+
       try {
         const meta = await SharePointService.getListMetadata(currentUser.accessToken!, 'Status_Checklist');
+        
         if (meta.lastModifiedDateTime !== lastListTimestampRef.current) {
           setIsSyncing(true);
           const today = new Date().toISOString().split('T')[0];
           const newSpStatus = await SharePointService.getStatusByDate(currentUser.accessToken!, today);
+          
           setTasks(prevTasks => prevTasks.map(task => {
             const updatedOps = { ...task.operations };
             let hasChanged = false;
+
             locations.forEach(sigla => {
               const statusMatch = newSpStatus.find(s => s.TarefaID === task.id && s.OperacaoSigla === sigla);
               const newStatus = statusMatch ? statusMatch.Status : 'PR';
@@ -106,28 +111,43 @@ const AppContent = () => {
                 hasChanged = true;
               }
             });
+
             return hasChanged ? { ...task, operations: updatedOps } : task;
           }));
+
           lastListTimestampRef.current = meta.lastModifiedDateTime;
           setIsSyncing(false);
         }
       } catch (e) {
         setIsSyncing(false);
       }
-    }, 6000);
+    }, 5000);
+
     return () => clearInterval(syncInterval);
   }, [currentUser, isLoading, isSyncing, locations]);
 
+  // Função chamada pelo TaskManager após um salvamento manual com sucesso
   const handleManualSaveComplete = async () => {
     if (!currentUser?.accessToken) return;
+    
+    // 1. Mantém o bloqueio por um tempo de segurança (cooldown)
     isSyncBlockedRef.current = true;
     setIsSyncPaused(true);
+
     if (cooldownTimeoutRef.current) window.clearTimeout(cooldownTimeoutRef.current);
+
+    try {
+        // 2. Busca o novo timestamp IMEDIATAMENTE para "consumir" a própria alteração
+        const meta = await SharePointService.getListMetadata(currentUser.accessToken, 'Status_Checklist');
+        lastListTimestampRef.current = meta.lastModifiedDateTime;
+    } catch (e) {}
+
+    // 3. Libera o sync após 3 segundos (tempo para o SharePoint estabilizar)
     cooldownTimeoutRef.current = window.setTimeout(() => {
         isSyncBlockedRef.current = false;
         setIsSyncPaused(false);
         cooldownTimeoutRef.current = null;
-    }, 8000); 
+    }, 3000);
   };
 
   const checkAndTriggerPartialSave = async (user: User, currentTasks: Task[]) => {
@@ -148,15 +168,9 @@ const AppContent = () => {
   };
 
   const handleLogout = () => {
-    // Limpa o cache local
     setUser(null);
     setStorageUser(null);
     delete (window as any).__access_token;
-    
-    // Limpa o cache do MSAL no navegador
-    localStorage.clear(); 
-    sessionStorage.clear();
-    
     navigate('/');
   };
 
