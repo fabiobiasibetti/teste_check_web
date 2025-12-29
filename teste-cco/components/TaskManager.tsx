@@ -29,7 +29,6 @@ interface TaskManagerProps {
   setCollapsedCategories: any;
   currentUser: User;
   onLogout: () => void;
-  onInteractionStart?: (taskId: string, location: string, status: OperationStatus) => void;
 }
 
 const TaskManager: React.FC<TaskManagerProps> = ({ 
@@ -39,8 +38,7 @@ const TaskManager: React.FC<TaskManagerProps> = ({
   collapsedCategories,
   setCollapsedCategories,
   currentUser,
-  onLogout,
-  onInteractionStart
+  onLogout
 }) => {
   const [activeTool, setActiveTool] = useState<OperationStatus | null>(null);
   const [isUpdating, setIsUpdating] = useState(false);
@@ -99,10 +97,7 @@ const TaskManager: React.FC<TaskManagerProps> = ({
   const handleUpdateStatus = async (taskId: string, location: string, status: OperationStatus) => {
     if (!currentUser.accessToken) return;
     
-    // 1. Notifica o App.tsx sobre a intenção de mudança para bloquear o sync
-    onInteractionStart?.(taskId, location, status);
-
-    // 2. Atualização Otimista (Interface responde na hora)
+    // Atualização Otimista Imediata (Não tem sync rodando, então o valor não volta mais)
     setTasks(prev => prev.map(t => t.id === taskId ? { ...t, operations: { ...t.operations, [location]: status } } : t));
     
     setIsUpdating(true);
@@ -115,9 +110,7 @@ const TaskManager: React.FC<TaskManagerProps> = ({
         DataReferencia: today, TarefaID: taskId, OperacaoSigla: location, Status: status, Usuario: currentUser.name, Title: uniqueKey
       });
     } catch (err: any) {
-        console.error("Erro ao salvar:", err);
-        // O App.tsx via sync irá eventualmente corrigir o estado se falhar, 
-        // mas aqui mantemos o otimista para não travar o usuário.
+        console.error("Falha ao gravar no SharePoint:", err);
     } finally {
       setIsUpdating(false);
     }
@@ -135,7 +128,6 @@ const TaskManager: React.FC<TaskManagerProps> = ({
 
   const handlePaintRow = async (taskId: string) => {
     if (!activeTool || !currentUser.accessToken) return;
-    
     locations.forEach(loc => {
         handleUpdateStatus(taskId, loc, activeTool!);
     });
@@ -170,8 +162,6 @@ const TaskManager: React.FC<TaskManagerProps> = ({
         for (const task of tasks) {
             for (const loc of locations) {
                 const uniqueKey = `${todayKey}_${task.id}_${loc}`;
-                // Notifica o App sobre o reset para manter o PR local
-                onInteractionStart?.(task.id, loc, 'PR');
                 await SharePointService.updateStatus(currentUser.accessToken!, {
                     DataReferencia: today, TarefaID: task.id, OperacaoSigla: loc, Status: 'PR', Usuario: resetResponsible, Title: uniqueKey
                 });
@@ -204,7 +194,6 @@ const TaskManager: React.FC<TaskManagerProps> = ({
 
   return (
     <div className="flex flex-col h-full bg-white dark:bg-slate-900 rounded-2xl border dark:border-slate-800 shadow-sm overflow-hidden relative font-sans transition-colors duration-500">
-      {/* Header */}
       <div className="px-4 py-3 border-b dark:border-slate-800 flex flex-col xl:flex-row justify-between items-center bg-gray-50/80 dark:bg-slate-800/80 backdrop-blur-md gap-3 shrink-0 z-50">
         <div className="flex items-center gap-4">
           <div className="flex items-center gap-2">
@@ -214,15 +203,9 @@ const TaskManager: React.FC<TaskManagerProps> = ({
             <h2 className="text-lg font-bold text-gray-800 dark:text-white whitespace-nowrap">Checklist CCO</h2>
           </div>
           <div className="h-6 w-px bg-gray-300 dark:bg-slate-700 hidden md:block" />
-          {isUpdating ? (
-            <div className="flex items-center gap-2 text-[10px] text-blue-500 animate-pulse font-black uppercase tracking-widest">
-              <Loader2 size={12} className="animate-spin"/> Gravando
-            </div>
-          ) : (
-            <div className="flex items-center gap-2 text-[10px] text-green-500 font-bold uppercase tracking-widest">
-              <ShieldCheck size={12}/> Protegido
-            </div>
-          )}
+          <div className={`flex items-center gap-2 text-[10px] font-bold uppercase tracking-widest ${isUpdating ? 'text-blue-500 animate-pulse' : 'text-green-500'}`}>
+            {isUpdating ? <><Loader2 size={12} className="animate-spin"/> Gravando...</> : <><ShieldCheck size={12}/> Estável</>}
+          </div>
         </div>
 
         <div className="flex flex-wrap items-center justify-center gap-3">
@@ -248,7 +231,6 @@ const TaskManager: React.FC<TaskManagerProps> = ({
         </div>
       </div>
 
-      {/* Main Table Area */}
       <div className="flex-1 overflow-auto bg-slate-100 dark:bg-slate-950 transition-colors duration-500 scrollbar-thin">
         <table className={`min-w-full border-separate border-spacing-0 select-none ${compact ? 'text-[10px]' : 'text-[11px]'}`}>
           <thead className="sticky top-0 z-[40]">
@@ -323,13 +305,13 @@ const TaskManager: React.FC<TaskManagerProps> = ({
                 </div>
                 <div className="p-6 bg-gray-50 dark:bg-slate-900">
                     <label className="block text-xs font-bold text-gray-500 dark:text-gray-400 uppercase mb-2">Responsável</label>
-                    <select value={resetResponsible} onChange={(e) => setResetResponsible(e.target.value)} className="w-full p-3 border dark:border-slate-700 rounded-xl bg-white dark:bg-slate-800 text-sm dark:text-white font-bold">
+                    <select value={resetResponsible} onChange={(e) => setResetResponsible(e.target.value)} className="w-full p-3 border dark:border-slate-700 rounded-xl bg-white dark:bg-slate-800 text-sm dark:text-white font-bold outline-none ring-2 ring-transparent focus:ring-amber-500">
                         <option value="">Selecione seu nome...</option>
                         {registeredUsers.map(name => <option key={name} value={name}>{name}</option>)}
                     </select>
                     <div className="flex gap-3 mt-8">
-                        <button onClick={() => setIsResetModalOpen(false)} className="flex-1 py-3 bg-gray-200 dark:bg-slate-700 text-gray-700 dark:text-gray-200 font-bold rounded-xl">Cancelar</button>
-                        <button onClick={handleResetChecklist} disabled={!resetResponsible.trim() || isUpdating} className="flex-[2] py-3 bg-amber-600 text-white font-bold rounded-xl shadow-lg flex items-center justify-center gap-2">
+                        <button onClick={() => setIsResetModalOpen(false)} className="flex-1 py-3 bg-gray-200 dark:bg-slate-700 text-gray-700 dark:text-gray-200 font-bold rounded-xl transition-colors">Cancelar</button>
+                        <button onClick={handleResetChecklist} disabled={!resetResponsible.trim() || isUpdating} className="flex-[2] py-3 bg-amber-600 text-white font-bold rounded-xl shadow-lg flex items-center justify-center gap-2 active:scale-95 transition-all disabled:opacity-50">
                             {isUpdating ? <Loader2 size={20} className="animate-spin" /> : <Save size={20} />} Confirmar Reset
                         </button>
                     </div>
