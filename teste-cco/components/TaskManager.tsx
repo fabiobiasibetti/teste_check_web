@@ -29,8 +29,6 @@ interface TaskManagerProps {
   setCollapsedCategories: any;
   currentUser: User;
   onLogout: () => void;
-  onInteractionStart?: () => void;
-  onInteractionEnd?: () => void;
 }
 
 const TaskManager: React.FC<TaskManagerProps> = ({ 
@@ -41,9 +39,7 @@ const TaskManager: React.FC<TaskManagerProps> = ({
   setCollapsedCategories,
   onUserSwitch, 
   currentUser,
-  onLogout,
-  onInteractionStart,
-  onInteractionEnd
+  onLogout
 }) => {
   const [activeTool, setActiveTool] = useState<OperationStatus | null>(null);
   const [isUpdating, setIsUpdating] = useState(false);
@@ -97,11 +93,10 @@ const TaskManager: React.FC<TaskManagerProps> = ({
     const handleMouseUp = () => {
       setIsDragging(false);
       paintedThisDrag.current.clear();
-      onInteractionEnd?.(); // Libera sincronização
     };
     window.addEventListener('mouseup', handleMouseUp);
     return () => window.removeEventListener('mouseup', handleMouseUp);
-  }, [onInteractionEnd]);
+  }, []);
 
   useEffect(() => {
     const handleKeyDown = (e: KeyboardEvent) => {
@@ -177,7 +172,6 @@ const TaskManager: React.FC<TaskManagerProps> = ({
   const handlePaintRow = async (taskId: string) => {
     if (!activeTool || !currentUser.accessToken) return;
     
-    onInteractionStart?.();
     const originalTasks = [...tasks];
     setTasks(prev => prev.map(t => t.id === taskId ? { 
       ...t, 
@@ -205,7 +199,6 @@ const TaskManager: React.FC<TaskManagerProps> = ({
       setTasks(originalTasks);
     } finally {
       setIsUpdating(false);
-      onInteractionEnd?.();
     }
   };
 
@@ -513,7 +506,6 @@ const TaskManager: React.FC<TaskManagerProps> = ({
                                 key={loc} 
                                 className="p-0 border-r border-slate-100 dark:border-slate-800 h-12 relative" 
                                 onMouseDown={() => {
-                                    onInteractionStart?.();
                                     setIsDragging(true);
                                     onCellInteraction(task.id, loc);
                                     paintedThisDrag.current.add(`${task.id}-${loc}`);
